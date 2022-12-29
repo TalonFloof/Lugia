@@ -74,9 +74,9 @@ pub enum Flags as u8 {
     c = 0b00010000
 }
 
-pub fn new_cpu(path string, audio &AudioPlayer) &CPU {
+pub fn new_cpu(path string) &CPU {
     mut cpu := &CPU {
-        mem: new_memory(path,audio)
+        mem: new_memory(path)
         halted: false
         ei: false
     }
@@ -1400,9 +1400,9 @@ mut:
     step_flip bool
 }
 
-pub fn new_rtpcpu(path string, audio &AudioPlayer) &RealTimePerfCPU {
+pub fn new_rtpcpu(path string) &RealTimePerfCPU {
     return &RealTimePerfCPU {
-        cpu: new_cpu(path,audio)
+        cpu: new_cpu(path)
         step_cycles: 0
         stopwatch: time.new_stopwatch(time.StopWatchOptions {auto_start: true})
         step_flip: false

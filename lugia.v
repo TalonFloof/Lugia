@@ -14,7 +14,6 @@ mut:
   fb int
   fb_dat []u8
   cpu &core.RealTimePerfCPU = unsafe { nil }
-  audio_dev int
   first_run bool = true
 }
 
@@ -33,9 +32,9 @@ fn lugia_frame(mut lugia Lugia) {
     lugia.gg.begin()
     lugia.gg.end()
     if os.args.len == 1 {
-      lugia.cpu = core.new_rtpcpu(open_file(),&core.AudioPlayer(&lugia))
+      lugia.cpu = core.new_rtpcpu(open_file())
     } else {
-      lugia.cpu = core.new_rtpcpu(os.args[1],&core.AudioPlayer(&lugia))
+      lugia.cpu = core.new_rtpcpu(os.args[1])
     }
     lugia.fb = lugia.gg.new_streaming_image(160,144,4,gg.StreamingImageConfig { min_filter: .nearest, mag_filter: .nearest })
     spawn cpu_loop(mut lugia)
@@ -130,26 +129,12 @@ fn cpu_loop(mut lugia &Lugia) {
           i += 1
         }
       }
-      //lugia.gg.update_pixel_data(lugia.fb,lugia.fb_dat.data)
     }
 
     if !lugia.cpu.flip() {
       continue
     }
   }
-}
-
-pub fn (l &Lugia) play(left_channel []f32, right_channel []f32) {
-  println("QUEUE!")
-  sdl.queue_audio(l.audio_dev,left_channel.data,u32(sizeof(left_channel)))
-}
-
-pub fn (l &Lugia) sample_rate() u32 {
-  return 44100
-}
-
-pub fn (l &Lugia) underflowed() bool {
-  return false
 }
 
 fn main() {
@@ -183,8 +168,7 @@ fn main() {
   }
   mut optained := sdl.AudioSpec {}
 
-  lugia.audio_dev = sdl.open_audio(&desired, &optained)
-  if lugia.audio_dev < 0 {
+  if sdl.open_audio(&desired, &optained) < 0 {
     error_msg := unsafe { cstring_to_vstring(sdl.get_error()) }
     show_alert("Couldn't initialize SDL audio device: ${error_msg}")
   }
@@ -198,9 +182,8 @@ fn main() {
     show_alert("SDL doesn't allow for 44100 Samples!")
   }
 
-  lugia.audio_dev = 1
-  sdl.pause_audio(0)
-  sdl.pause_audio_device(lugia.audio_dev,0)
+  sdl.pause_audio(1)
+  sdl.pause_audio_device(1,1)
 
   lugia.run()
   lugia.cpu.cpu.mem.cart.save()

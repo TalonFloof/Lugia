@@ -23,7 +23,7 @@ pub mut:
     serial_control u8
 }
 
-pub fn new_memory(path string, audio &AudioPlayer) &Memory {
+pub fn new_memory(path string) &Memory {
     mut r := &Memory {
         wram: []u8{len: 0x8000, init: 0, cap: 0x8000}
         inte: 0x00
@@ -37,13 +37,12 @@ pub fn new_memory(path string, audio &AudioPlayer) &Memory {
         hdma: new_hdma()
         timer: unsafe { nil }
         joypad: unsafe { nil }
-		apu: unsafe { nil }
+		apu: new_apu(44100)
     }
     r.is_gbc = (r.cart.get(0x0143) & 0x80) == 0x80
     r.gpu = new_gpu(r.is_gbc,&r.intf)
     r.timer = new_timer(&r.intf)
     r.joypad = new_joypad(&r.intf)
-	r.apu = new_apu(audio, !r.is_gbc)
     r.set(0xff05, 0x00)
     r.set(0xff06, 0x00)
     r.set(0xff07, 0x00)
