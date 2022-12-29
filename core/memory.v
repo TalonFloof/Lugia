@@ -17,12 +17,13 @@ pub mut:
     hdma &HDMA
     timer &Timer
     joypad &Joypad
+	apu &APU
 
     serial_data u8
     serial_control u8
 }
 
-pub fn new_memory(path string) &Memory {
+pub fn new_memory(path string, audio &AudioPlayer) &Memory {
     mut r := &Memory {
         wram: []u8{len: 0x8000, init: 0, cap: 0x8000}
         inte: 0x00
@@ -36,11 +37,13 @@ pub fn new_memory(path string) &Memory {
         hdma: new_hdma()
         timer: unsafe { nil }
         joypad: unsafe { nil }
+		apu: unsafe { nil }
     }
     r.is_gbc = (r.cart.get(0x0143) & 0x80) == 0x80
     r.gpu = new_gpu(r.is_gbc,&r.intf)
     r.timer = new_timer(&r.intf)
     r.joypad = new_joypad(&r.intf)
+	r.apu = new_apu(audio, !r.is_gbc)
     r.set(0xff05, 0x00)
     r.set(0xff06, 0x00)
     r.set(0xff07, 0x00)
@@ -130,6 +133,9 @@ pub fn (mem &Memory) get(a u16) u8 {
         a == 0xff0f { // Intf
             return mem.intf.a
         }
+		a >= 0xff10 && a <= 0xff3f {
+			return mem.apu.get(a)
+        }
         a == 0xff4d { // RAM Speed? (I have no idea)
             b := if mem.speed == 1 { 0x80 } else { 0x00 }
             c := if mem.shift { 0x01 } else { 0x00 }
@@ -198,6 +204,9 @@ pub fn (mut mem Memory) set(a u16, v u8) {
         a == 0xff0f { // Intf
             mem.intf.a = v
         }
+		a >= 0xff10 && a <= 0xff3f {
+			mem.apu.set(a,v)
+        }
         a == 0xff46 { // Execute DMA Transfer to OAM
             if v > 0xf1 { panic("v is not less than or equal to 0xf1") }
             base := u16(v) << 8
@@ -252,6 +261,7 @@ pub fn (mut mem Memory) next(cycles u32) u32 {
     cpu_cycles := cycles + vram_cycles * cpu_divider
     mem.timer.next(cpu_cycles)
     mem.gpu.next(gpu_cycles)
+	mem.apu.next(gpu_cycles)
     return gpu_cycles
 }
 
