@@ -37,12 +37,13 @@ pub fn new_memory(path string) &Memory {
         hdma: new_hdma()
         timer: unsafe { nil }
         joypad: unsafe { nil }
-		apu: new_apu(44100)
+		apu: unsafe { nil }
     }
     r.is_gbc = (r.cart.get(0x0143) & 0x80) == 0x80
     r.gpu = new_gpu(r.is_gbc,&r.intf)
     r.timer = new_timer(&r.intf)
     r.joypad = new_joypad(&r.intf)
+	r.apu = new_apu(!r.is_gbc)
     r.set(0xff05, 0x00)
     r.set(0xff06, 0x00)
     r.set(0xff07, 0x00)

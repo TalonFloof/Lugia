@@ -56,7 +56,13 @@ fn (x &MBC1ROM) ram_bank() usize {
 pub fn (x &MBC1ROM) get(a u16) u8 {
     return match true {
         a <= 0x3fff { x.rom[a] }
-        a >= 0x4000 && a <= 0x7fff { x.rom[x.rom_bank() * 0x4000 + usize(a) - 0x4000] }
+        a >= 0x4000 && a <= 0x7fff {
+			if (x.rom_bank() * 0x4000 + usize(a) - 0x4000) < x.rom.len {
+				x.rom[x.rom_bank() * 0x4000 + usize(a) - 0x4000]
+			} else {
+				0x00
+			}
+		}
         a >= 0xa000 && a <= 0xbfff { if x.ram_enabled { x.ram[x.ram_bank() * 0x2000 + usize(a) - 0xa000] } else { 0x00 } }
         else { 0x00 }
     }

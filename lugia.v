@@ -5,7 +5,8 @@ import core
 import gg
 import gx
 import os
-import sdl
+import math
+import sokol.audio
 
 [heap]
 pub struct Lugia {
@@ -36,8 +37,16 @@ fn lugia_frame(mut lugia Lugia) {
     } else {
       lugia.cpu = core.new_rtpcpu(os.args[1])
     }
+    audio.setup(&C.saudio_desc {
+      sample_rate: 44100
+      num_channels: 1
+      buffer_frames: 2048
+      stream_userdata_cb: stream_audio
+      user_data: lugia
+   })
     lugia.fb = lugia.gg.new_streaming_image(160,144,4,gg.StreamingImageConfig { min_filter: .nearest, mag_filter: .nearest })
     spawn cpu_loop(mut lugia)
+
     lugia.first_run = false
   } else {
     lugia.gg.begin()
@@ -137,6 +146,19 @@ fn cpu_loop(mut lugia &Lugia) {
   }
 }
 
+fn stream_audio(mut buffer &f32, num_frames int, num_channels int, mut lugia Lugia) {
+  if lugia.cpu != unsafe { nil } {
+    lugia.cpu.cpu.mem.apu.buffer_lock.@lock()
+    unsafe { vmemset(buffer, 0, u32(num_frames)*sizeof(f32)) }
+    if lugia.cpu.cpu.mem.apu.buffer.len > 0 {
+      len := math.min(num_frames,lugia.cpu.cpu.mem.apu.buffer.len)
+      unsafe { vmemcpy(buffer, lugia.cpu.cpu.mem.apu.buffer.data, u32(len)*sizeof(f32)) }
+      lugia.cpu.cpu.mem.apu.buffer.delete_many(0,len)
+    }
+    lugia.cpu.cpu.mem.apu.buffer_lock.unlock()
+  }
+}
+
 fn main() {
   mut lugia := &Lugia {
     fb_dat: []u8{len: 160*144*4, init: 0xff}
@@ -152,38 +174,6 @@ fn main() {
     window_title: "Lugia"
     create_window: true
   )
-  if sdl.init(sdl.init_audio) < 0 {
-    error_msg := unsafe { cstring_to_vstring(sdl.get_error()) }
-    show_alert("Couldn't initialize SDL: ${error_msg}")
-  }
-
-  desired := sdl.AudioSpec {
-    freq: 44100
-    format: sdl.audio_f32sys
-    samples: 44100
-    channels: 1
-    silence: 0
-    callback: unsafe { nil }
-    userdata: unsafe { nil }
-  }
-  mut optained := sdl.AudioSpec {}
-
-  if sdl.open_audio(&desired, &optained) < 0 {
-    error_msg := unsafe { cstring_to_vstring(sdl.get_error()) }
-    show_alert("Couldn't initialize SDL audio device: ${error_msg}")
-  }
-  if optained.format != sdl.audio_f32sys {
-    show_alert("SDL doesn't allow for f32 audio samples!")
-  }
-  if optained.freq != 44100 {
-    show_alert("SDL doesn't allow for a 44100Hz Sample Rate!")
-  }
-  if optained.samples != 44100 {
-    show_alert("SDL doesn't allow for 44100 Samples!")
-  }
-
-  sdl.pause_audio(1)
-  sdl.pause_audio_device(1,1)
 
   lugia.run()
   lugia.cpu.cpu.mem.cart.save()

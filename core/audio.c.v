@@ -1,6 +1,6 @@
 module core
 
-import sdl
+import sync
 
 #include "@VROOT/core/blip_buf.c"
 
@@ -11,815 +11,893 @@ fn C.blip_new(int) &C.blip_t
 
 fn C.blip_add_delta(&C.blip_t, u32, int)
 
+fn C.blip_read_samples(&C.blip_t, &i16, int, bool) int
+
 fn C.blip_end_frame(&C.blip_t, u32)
 
 fn C.blip_samples_avail(&C.blip_t) int
 
-fn C.blip_read_samples(&C.blip_t, &i16, int, bool) int
+fn C.blip_clear(&C.blip_t)
 
 fn C.blip_set_rates(&C.blip_t, f64, f64)
 
-fn C.blip_clear(&C.blip_t)
+const (
+	wave_pattern = [[i32(-1),-1,-1,-1,1,-1,-1,-1]!,[i32(-1),-1,-1,-1,1,1,-1,-1]!,[i32(-1),-1,1,1,1,1,-1,-1]!,[i32(1),1,1,1,-1,-1,1,1]!]!
+	clocks_per_second  = u32(clock_frequency)
+	clocks_per_frame = u32(clocks_per_second / 512)
+	sweep_delay_zero_period = u8(8)
 
-enum Channel {
-    square1
-    square2
-    wave
-    noise
-    mixer
-}
+	wave_initial_delay = u32(4)
+)
 
-[heap]
-struct Register {
+struct VolumeEnvelope {
 pub mut:
-    channel Channel
-    nrx0 u8
-    nrx1 u8
-    nrx2 u8
-    nrx3 u8
-    nrx4 u8
+	period u8
+    goes_up bool
+    delay u8
+    initial_volume u8
+    volume u8
 }
 
-fn (self &Register) get_sweep_period() u8 {
-	return (self.nrx0 >> 4) & 0x07
+pub fn new_volume_envelope() &VolumeEnvelope {
+	return &VolumeEnvelope {
+        period: 0
+        goes_up: false
+        delay: 0
+        initial_volume: 0
+        volume: 0
+    }
 }
 
-fn (self &Register) get_negate() bool {
-	return self.nrx0 & 0x08 != 0x00
-}
-
-fn (self &Register) get_shift() u8 {
-	return self.nrx0 & 0x07
-}
-
-fn (self &Register) get_dac_power() bool {
-	return self.nrx0 & 0x80 != 0x00
-}
-
-fn (self &Register) get_duty() u8 {
-	return self.nrx1 >> 6
-}
-
-fn (self &Register) get_length_load() u16 {
-	if self.channel == Channel.wave {
-		return (1 << 8) - u16(self.nrx1)
+pub fn (self &VolumeEnvelope) get(a u16) u8 {
+	if (a == 0xFF12) || (a == 0xFF17) || (a == 0xFF2) {
+		return u8(((self.initial_volume & 0xF) << 4) | (if self.goes_up { 0x08 } else { 0 }) | (self.period & 0x7))
 	} else {
-		return (1 << 6) - u16(self.nrx1 & 0x3f)
+		return 0
 	}
 }
 
-fn (self &Register) get_starting_volume() u8 {
-	return self.nrx2 >> 4
-}
-
-fn (self &Register) get_volume_code() u8 {
-	return (self.nrx2 >> 5) & 0x03
-}
-
-fn (self &Register) get_envelope_add_mode() bool {
-	return self.nrx2 & 0x08 != 0x00
-}
-
-fn (self &Register) get_period() u8 {
-	return self.nrx2 & 0x07
-}
-
-fn (self &Register) get_frequency() u16 {
-	return u16(self.nrx4 & 0x07) << 8 | u16(self.nrx3)
-}
-
-fn (mut self Register) set_frequency(f u16) {
-	h := u8((f >> 8) & 0x07)
-	l := u8(f)
-	self.nrx4 = (self.nrx4 & 0xf8) | h
-	self.nrx3 = l
-}
-
-fn (self &Register) get_clock_shift() u8 {
-	return self.nrx3 >> 4
-}
-
-fn (self &Register) get_width_mode_of_lfsr() bool {
-	return self.nrx3 & 0x08 != 0x00
-}
-
-fn (self &Register) get_dividor_code() u8 {
-	return self.nrx3 & 0x07
-}
-
-fn (self &Register) get_trigger() bool {
-	return self.nrx4 & 0x80 != 0x00
-}
-
-fn (mut self Register) set_trigger(b bool) {
-	if b {
-		self.nrx4 |= 0x80
-	} else {
-		self.nrx4 &= 0x7f
+pub fn (mut self VolumeEnvelope) set(a u16, v u8) {
+	if (a == 0xFF12) || (a == 0xFF17) || (a == 0xFF21) {
+		self.period = v & 0x7
+        self.goes_up = v & 0x8 == 0x8
+        self.initial_volume = v >> 4
+        self.volume = self.initial_volume
+	} else if ((a == 0xFF14) || (a == 0xFF19) || (a == 0xFF23)) && (v & 0x80 == 0x80) {
+		self.delay = self.period
+        self.volume = self.initial_volume
 	}
 }
 
-fn (self &Register) get_length_enable() bool {
-	return self.nrx4 & 0x40 != 0x00
-}
-
-fn (self &Register) get_l_vol() u8 {
-	return (self.nrx0 >> 4) & 0x07
-}
-
-fn (self &Register) get_r_vol() u8 {
-	return self.nrx0 & 0x07
-}
-
-fn (self &Register) get_power() bool {
-	return self.nrx2 & 0x80 != 0x00
-}
-
-fn new_register(channel Channel) &Register {
-	nrx1 := if (channel == Channel.square1) || (channel == Channel.square2) { 0x40 } else { 0x00 }
-	return &Register {
-		channel: channel
-		nrx0: 0x00
-		nrx1: u8(nrx1)
-		nrx2: 0x00
-		nrx3: 0x00
-		nrx4: 0x00
+pub fn (mut self VolumeEnvelope) tick() {
+	if self.delay > 1 {
+		self.delay -= 1
+	} else if self.delay == 1 {
+		self.delay = self.period
+		if self.goes_up && self.volume < 15 {
+			self.volume += 1
+		} else if !self.goes_up && self.volume > 0 {
+			self.volume -= 1
+		}
 	}
-}
-
-struct FrameSequencer {
-pub mut:
-    step u8
-}
-
-fn new_frame_sequencer() FrameSequencer {
-    return FrameSequencer { step: 0x00 }
-}
-
-fn (mut self FrameSequencer) next() u8 {
-    self.step += 1
-    self.step %= 8
-    return self.step
 }
 
 struct LengthCounter {
 pub mut:
-    reg &Register
-    n u16
+    enabled bool
+    value u16
+    max u16
 }
 
-fn new_length_counter(reg &Register) LengthCounter {
-	return LengthCounter { reg: reg, n: 0x0000 }
+pub fn new_length_counter(max u16) &LengthCounter {
+	return &LengthCounter {
+        enabled: false
+        value: 0
+        max: max
+    }
 }
 
-fn (mut self LengthCounter) next() {
-	if self.reg.get_length_enable() && self.n != 0 {
-		self.n -= 1
-		if self.n == 0 {
-			self.reg.set_trigger(false)
+fn (self &LengthCounter) is_active() bool {
+	return self.value > 0
+}
+
+fn (self &LengthCounter) extra_step(frame_step u8) bool {
+	return frame_step % 2 == 1
+}
+
+fn (mut self LengthCounter) enable(enable bool, frame_step u8) {
+	was_enabled := self.enabled
+	self.enabled = enable
+	if !was_enabled && self.extra_step(frame_step) {
+		self.step()
+	}
+}
+
+fn (mut self LengthCounter) set(minus_value u8) {
+	self.value = self.max - minus_value as u16
+}
+
+fn (mut self LengthCounter) trigger(frame_step u8) {
+	if self.value == 0 {
+		self.value = self.max
+		if self.extra_step(frame_step) {
+			self.step()
 		}
 	}
 }
 
-fn (mut self LengthCounter) reload() {
-	if self.n == 0x0000 {
-		self.n = u16(if self.reg.channel == Channel.wave {
-			1 << 8
-		} else {
-			1 << 6
-		})
+fn (mut self LengthCounter) step() {
+	if self.enabled && self.value > 0 {
+		self.value -= 1
 	}
 }
 
-struct VolumeEnvelope {
+struct SquareChannel {
 pub mut:
-    reg &Register
-    timer Clock
-    volume u8
+    active bool
+    dac_enabled bool
+    duty u8
+    phase u8
+    length &LengthCounter
+    frequency u16
+    period u32
+    last_amp i32
+    delay u32
+    has_sweep bool
+    sweep_enabled bool
+    sweep_frequency u16
+    sweep_delay u8
+    sweep_period u8
+    sweep_shift u8
+    sweep_negate bool
+    sweep_did_negate bool
+    volume_envelope &VolumeEnvelope
+    blip &C.blip_t
 }
 
-fn new_volume_envelope(reg &Register) VolumeEnvelope {
-	return VolumeEnvelope {
-		reg: reg
-		timer: new_clock(8)
-		volume: 0x00
+fn new_square_channel(blip &C.blip_t, with_sweep bool) &SquareChannel {
+	return &SquareChannel {
+		active: false
+		dac_enabled: false
+		duty: 1
+		phase: 1
+		length: new_length_counter(64)
+		frequency: 0
+		period: 2048
+		last_amp: 0
+		delay: 0
+		has_sweep: with_sweep
+		sweep_enabled: false
+		sweep_frequency: 0
+		sweep_delay: 0
+		sweep_period: 0
+		sweep_shift: 0
+		sweep_negate: false
+		sweep_did_negate: false
+		volume_envelope: new_volume_envelope()
+		blip: blip
 	}
 }
 
-fn (mut self VolumeEnvelope) reload() {
-	p := self.reg.get_period()
-	// The volume envelope and sweep timers treat a period of 0 as 8.
-	self.timer.period = if p == 0 { u32(8) } else { u32(p) }
-	self.volume = self.reg.get_starting_volume()
+fn (self &SquareChannel) on() bool {
+    return self.active
 }
 
-fn (mut self VolumeEnvelope) next() {
-	if self.reg.get_period() == 0 {
-		return
-	}
-	if self.timer.next(1) == 0x00 {
-		return
-	}
-	// If this new volume within the 0 to 15 range, the volume is updated
-	v := u8(if self.reg.get_envelope_add_mode() {
-		self.volume + 1
-	} else {
-		self.volume - 1
-	})
-	if v <= 15 {
-		self.volume = v
-	}
-}
-
-struct FrequencySweep {
-pub mut:
-    reg &Register
-    timer Clock
-    enable bool
-    shadow u16
-    newfeq u16
-}
-
-fn new_frequency_sweep(reg &Register) FrequencySweep {
-	return FrequencySweep {
-		reg: reg
-		timer: new_clock(8)
-		enable: false
-		shadow: 0x0000
-		newfeq: 0x0000
-	}
-}
-
-fn (mut self FrequencySweep) reload() {
-	self.shadow = self.reg.get_frequency()
-	p := self.reg.get_sweep_period()
-
-	self.timer.period = u32(if p == 0 { 8 } else { p })
-	self.enable = p != 0x00 || self.reg.get_shift() != 0x00
-	if self.reg.get_shift() != 0x00 {
-		self.frequency_calculation()
-		self.overflow_check()
-	}
-}
-
-fn (mut self FrequencySweep) frequency_calculation() {
-	offset := self.shadow >> self.reg.get_shift()
-	if self.reg.get_negate() {
-		self.newfeq = u16(self.shadow - offset)
-	} else {
-		self.newfeq = u16(self.shadow + offset)
-	}
-}
-
-fn (mut self FrequencySweep) overflow_check() {
-	if self.newfeq >= 2048 {
-		self.reg.set_trigger(false)
-	}
-}
-
-fn (mut self FrequencySweep) next() {
-	if !self.enable || self.reg.get_sweep_period() == 0 {
-		return
-	}
-	if self.timer.next(1) == 0x00 {
-		return
-	}
-	self.frequency_calculation()
-	self.overflow_check()
-
-	if self.newfeq < 2048 && self.reg.get_shift() != 0 {
-		self.reg.set_frequency(self.newfeq)
-		self.shadow = self.newfeq
-		self.frequency_calculation()
-		self.overflow_check()
-	}
-}
-
-struct Blip {
-pub mut:
-    data &C.blip_t
-    from u32
-    ampl i32
-}
-
-fn new_blip(data &C.blip_t) Blip {
-	return Blip {
-		data: data
-		from: 0x0000_0000
-		ampl: 0x0000_0000
-	}
-}
-
-fn (mut self Blip) set(time u32, ampl i32) {
-	self.from = time
-	d := ampl - self.ampl
-	self.ampl = ampl
-	C.blip_add_delta(self.data, time, d)
-}
-
-struct ChannelSquare {
-pub mut:
-    reg &Register
-    timer Clock
-    lc LengthCounter
-    ve VolumeEnvelope
-    fs FrequencySweep
-    blip Blip
-    idx u8
-}
-
-fn new_channel_square(blip &C.blip_t, mode Channel) &ChannelSquare {
-	reg := new_register(mode)
-	return &ChannelSquare {
-		reg: reg
-		timer: new_clock(8192)
-		lc: new_length_counter(reg)
-		ve: new_volume_envelope(reg)
-		fs: new_frequency_sweep(reg)
-		blip: new_blip(blip)
-		idx: 1
-	}
-}
-
-// This assumes no volume or sweep adjustments need to be done in the meantime
-fn (mut self ChannelSquare) next(cycles u32) {
-	pat := match self.reg.get_duty() {
-		0 { 0b0000_0001 }
-		1 { 0b1000_0001 }
-		2 { 0b1000_0111 }
-		3 { 0b0111_1110 }
-		else { panic("BOI") }
-	}
-	vol := i32(self.ve.volume)
-	for _ in 0..self.timer.next(cycles) {
-		ampl := if !self.reg.get_trigger() || self.ve.volume == 0 {
-			0x00
-		} else if (pat >> self.idx) & 0x01 != 0x00 {
-			vol
-		} else {
-			vol * -1
+fn (self &SquareChannel) get(a u16) u8 {
+    match true {
+		a == 0xFF10 {
+			return u8(0x80 | ((self.sweep_period & 0x7) << 4) | (if self.sweep_negate { 0x8 } else { 0 }) | (self.sweep_shift & 0x7))
 		}
-		self.blip.set(self.blip.from + self.timer.period, ampl)
-		self.idx = (self.idx + 1) % 8
+		a == 0xFF11 || a == 0xFF16 {
+			return ((self.duty & 3) << 6) | 0x3F
+		}
+		a == 0xFF12 || a == 0xFF17 {
+			return self.volume_envelope.get(a)
+		}
+		a == 0xFF13 || a == 0xFF18 {
+			return 0xff
+		}
+		a == 0xFF14 || a == 0xFF19 {
+			return u8(0x80 | (if self.length.enabled { 0x40 } else { 0 }) | 0x3F)
+		}
+		else {
+			return 0
+		}
 	}
 }
 
-fn (self &ChannelSquare) get(a u16) u8 {
-	return match true {
-		a == 0xff10 || a == 0xff15 { self.reg.nrx0 }
-		a == 0xff11 || a == 0xff16 { self.reg.nrx1 }
-		a == 0xff12 || a == 0xff17 { self.reg.nrx2 }
-		a == 0xff13 || a == 0xff18 { self.reg.nrx3 }
-		a == 0xff14 || a == 0xff19 { self.reg.nrx4 }
-		else { panic("BOI") }
-	}
-}
-
-fn (mut self ChannelSquare) set(a u16, v u8) {
+fn (mut self SquareChannel) set(a u16, v u8, frame_step u8) {
 	match true {
-		a == 0xff10 || a == 0xff15 { self.reg.nrx0 = v }
-		a == 0xff11 || a == 0xff16 {
-			self.reg.nrx1 = v
-			self.lc.n = self.reg.get_length_load()
+		a == 0xFF10 {
+			self.sweep_period = (v >> 4) & 0x7
+			self.sweep_shift = v & 0x7
+			old_sweep_negate := self.sweep_negate
+			self.sweep_negate = v & 0x8 == 0x8
+			if old_sweep_negate && !self.sweep_negate && self.sweep_did_negate {
+				self.active = false
+			}
+			self.sweep_did_negate = false
 		}
-		a == 0xff12 || a == 0xff17 { self.reg.nrx2 = v }
-		a == 0xff13 || a == 0xff18 {
-			self.reg.nrx3 = v
-			self.timer.period = period(self.reg)
+		a == 0xFF11 || a == 0xFF16 {
+			self.duty = v >> 6
+			self.length.set(v & 0x3F)
 		}
-		a == 0xff14 || a == 0xff19 {
-			self.reg.nrx4 = v
-			self.timer.period = period(self.reg)
-			if self.reg.get_trigger() {
-				self.lc.reload()
-				self.ve.reload()
-				if self.reg.channel == Channel.square1 {
-					self.fs.reload()
+		a == 0xFF12 || a == 0xFF17 {
+			self.dac_enabled = v & 0xF8 != 0
+			self.active = self.active && self.dac_enabled
+		}
+		a == 0xFF13 || a == 0xFF18 {
+			self.frequency = (self.frequency & 0x0700) | u16(v)
+			self.calculate_period()
+		}
+		a == 0xFF14 || a == 0xFF19 {
+			self.frequency = (self.frequency & 0x00FF) | (u16(v & 0b0000_0111) << 8)
+			self.calculate_period()
+
+			self.length.enable(v & 0x40 == 0x40, frame_step)
+			self.active = self.active && self.length.is_active()
+
+			if v & 0x80 == 0x80 {
+				if self.dac_enabled {
+					self.active = true
+				}
+
+				self.length.trigger(frame_step)
+
+				if self.has_sweep {
+					self.sweep_frequency = self.frequency
+					self.sweep_delay = if self.sweep_period != 0 { self.sweep_period } else { sweep_delay_zero_period }
+
+					self.sweep_enabled = self.sweep_period > 0 || self.sweep_shift > 0
+					if self.sweep_shift > 0 {
+						self.sweep_calculate_frequency()
+					}
 				}
 			}
 		}
 		else {}
 	}
+	self.volume_envelope.set(a, v)
 }
 
-struct ChannelWave {
-pub mut:
-    reg &Register
-    timer Clock
-    lc LengthCounter
-    blip Blip
-    waveram [16]u8
-    waveidx usize
+fn (mut self SquareChannel) calculate_period() {
+	if self.frequency > 2047 { self.period = 0 } else { self.period = (2048 - u32(self.frequency)) * 4 }
 }
 
-fn new_channel_wave(blip &C.blip_t) &ChannelWave {
-	reg := new_register(Channel.wave)
-	return &ChannelWave {
-		reg: reg
-		timer: new_clock(8192)
-		lc: new_length_counter(reg)
-		blip: new_blip(blip)
-		waveram: [16]u8{init: 0}
-		waveidx: 0x00
+fn (mut self SquareChannel) run(start_time u32, end_time u32) {
+	if !self.active || self.period == 0 {
+		if self.last_amp != 0 {
+			C.blip_add_delta(self.blip, start_time, -self.last_amp)
+			self.last_amp = 0
+			self.delay = 0
+		}
+	}
+	else {
+		mut time := start_time + self.delay
+		pattern := wave_pattern[self.duty]
+		vol := i32(self.volume_envelope.volume)
+
+		for time < end_time {
+			amp := vol * pattern[self.phase]
+			if amp != self.last_amp {
+				C.blip_add_delta(self.blip, time, amp - self.last_amp)
+				self.last_amp = amp
+			}
+			time += self.period
+			self.phase = (self.phase + 1) % 8
+		}
+
+		self.delay = time - end_time
 	}
 }
 
-fn (mut self ChannelWave) next(cycles u32) {
-	s := match self.reg.get_volume_code() {
-		0 { 4 }
-		1 { 0 }
-		2 { 1 }
-		3 { 2 }
-		else { panic("BOI") }
-	}
-	for _ in 0..self.timer.next(cycles) {
-		sample := if self.waveidx & 0x01 == 0x00 {
-			self.waveram[self.waveidx / 2] & 0x0f
-		} else {
-			self.waveram[self.waveidx / 2] >> 4
-		}
-		ampl := if !self.reg.get_trigger() || !self.reg.get_dac_power() {
-			0x00
-		} else {
-			i32(sample >> s)
-		}
-		self.blip.set(self.blip.from + self.timer.period, ampl)
-		self.waveidx = (self.waveidx + 1) % 32
-	}
+fn (mut self SquareChannel) step_length() {
+	self.length.step()
+	self.active = self.active && self.length.is_active()
 }
 
-fn (self &ChannelWave) get(a u16) u8 {
-	return match true {
-		a == 0xff1a { self.reg.nrx0 }
-		a == 0xff1b { self.reg.nrx1 }
-		a == 0xff1c { self.reg.nrx2 }
-		a == 0xff1d { self.reg.nrx3 }
-		a == 0xff1e { self.reg.nrx4 }
-		a >= 0xff30 && a <= 0xff3f { self.waveram[a - 0xff30] }
-		else { panic("BOI") }
+fn (mut self SquareChannel) sweep_calculate_frequency() u16 {
+	offset := self.sweep_frequency >> self.sweep_shift
+
+	newfreq := if self.sweep_negate {
+		self.sweep_did_negate = true
+		u16(self.sweep_frequency - offset)
 	}
+	else {
+		u16(self.sweep_frequency + offset)
+	}
+
+	if newfreq > 2047 {
+		self.active = false
+	}
+	return newfreq
 }
 
-fn (mut self ChannelWave) set(a u16, v u8) {
-	match true {
-		a == 0xff1a { self.reg.nrx0 = v }
-		a == 0xff1b {
-			self.reg.nrx1 = v
-			self.lc.n = self.reg.get_length_load()
+fn (mut self SquareChannel) step_sweep() {
+	if self.sweep_delay > 1 {
+		self.sweep_delay -= 1
+	}
+	else {
+		if self.sweep_period == 0 {
+			self.sweep_delay = sweep_delay_zero_period
 		}
-		a == 0xff1c { self.reg.nrx2 = v }
-		a == 0xff1d {
-			self.reg.nrx3 = v
-			self.timer.period = period(self.reg)
-		}
-		a == 0xff1e {
-			self.reg.nrx4 = v
-			self.timer.period = period(self.reg)
-			if self.reg.get_trigger() {
-				self.lc.reload()
-				self.waveidx = 0x00
+		else {
+			self.sweep_delay = self.sweep_period
+			if self.sweep_enabled {
+				newfreq := self.sweep_calculate_frequency()
+				if newfreq <= 2047 {
+					if self.sweep_shift != 0 {
+						self.sweep_frequency = newfreq
+						self.frequency = newfreq
+						self.calculate_period()
+					}
+					self.sweep_calculate_frequency()
+				}
 			}
 		}
-		a >= 0xff30 && a <= 0xff3f { self.waveram[a - 0xff30] = v }
+	}
+}
+
+struct WaveChannel {
+pub mut:
+    active bool
+    dac_enabled bool
+    length &LengthCounter
+    frequency u16
+    period u32
+    last_amp i32
+    delay u32
+    volume_shift u8
+    waveram [16]u8
+    current_wave u8
+    dmg_mode bool
+    sample_recently_accessed bool
+    blip &C.blip_t
+}
+
+fn new_wave_channel(blip &C.blip_t, dmg_mode bool) &WaveChannel {
+	return &WaveChannel {
+		active: false
+		dac_enabled: false
+		length: new_length_counter(256)
+		frequency: 0
+		period: 2048
+		last_amp: 0
+		delay: 0
+		volume_shift: 0
+		waveram: [16]u8{init: 0}
+		current_wave: 0
+		dmg_mode: dmg_mode
+		sample_recently_accessed: false
+		blip: blip
+	}
+}
+
+fn (self &WaveChannel) get(a u16) u8 {
+	match a {
+		0xFF1A {
+			return u8((if self.dac_enabled { 0x80 } else { 0 }) | 0x7F)
+		}
+		0xFF1B { return 0xFF }
+		0xFF1C {
+			return u8(0x80 | ((self.volume_shift & 0b11) << 5) | 0x1F)
+		}
+		0xFF1D { return 0xFF }
+		0xFF1E {
+			return u8(0x80 | if self.length.enabled { 0x40 } else { 0 } | 0x3F)
+		}
+		else {
+			if a >= 0xff30 && a <= 0xff3f {
+				if !self.active {
+					return self.waveram[a - 0xFF30]
+				} else {
+					if !self.dmg_mode || self.sample_recently_accessed {
+						return self.waveram[usize(self.current_wave) >> 1]
+					} else {
+						return 0xFF
+					}
+				}
+			}
+			return 0
+		}
+	}
+}
+
+fn (mut self WaveChannel) set(a u16, v u8, frame_step u8) {
+	match a {
+		0xFF1A {
+			self.dac_enabled = (v & 0x80) == 0x80
+            self.active = self.active && self.dac_enabled
+		}
+		0xFF1B { self.length.set(v) }
+		0xFF1C {
+			self.volume_shift = (v >> 5) & 0b11
+		}
+		0xFF1D {
+			self.frequency = (self.frequency & 0x0700) | u16(v)
+            self.calculate_period()
+		}
+		0xFF1E {
+			self.frequency = (self.frequency & 0x00FF) | (u16(v & 0b111) << 8)
+			self.calculate_period()
+
+			self.length.enable(v & 0x40 == 0x40, frame_step)
+			self.active = self.active && self.length.is_active()
+
+			if v & 0x80 == 0x80 {
+				self.dmg_maybe_corrupt_waveram()
+
+				self.length.trigger(frame_step)
+
+				self.current_wave = 0
+				self.delay = self.period + wave_initial_delay
+
+				if self.dac_enabled {
+					self.active = true
+				}
+			}
+		}
+		else {
+			if a >= 0xff30 && a <= 0xff3f {
+				if !self.active {
+                    self.waveram[usize(a) - 0xFF30] = v
+                } else {
+                    if !self.dmg_mode || self.sample_recently_accessed {
+                        self.waveram[usize(self.current_wave) >> 1] = v
+                    }
+                }
+			}
+		}
+	}
+}
+
+fn (mut self WaveChannel) calculate_period() {
+	if self.frequency > 2048 { self.period = 0 } else { self.period = (2048 - u32(self.frequency)) * 2 }
+}
+
+fn (self &WaveChannel) on() bool {
+    return self.active
+}
+
+fn (mut self WaveChannel) run(start_time u32, end_time u32) {
+	self.sample_recently_accessed = false
+	if !self.active || self.period == 0 {
+		if self.last_amp != 0 {
+			C.blip_add_delta(self.blip, start_time, -self.last_amp)
+			self.last_amp = 0
+			self.delay = 0
+		}
+	} else {
+		mut time := start_time + self.delay
+		volshift := match self.volume_shift {
+			0 { 4 + 2 }
+			1 { 0 }
+			2 { 1 }
+			3 { 2 }
+			else {panic("")}
+		}
+
+		for time < end_time {
+			wavebyte := self.waveram[usize(self.current_wave) >> 1]
+			sample := if self.current_wave % 2 == 0 { wavebyte >> 4 } else { wavebyte & 0xF }
+
+			 amp := i32((sample << 2) >> volshift)
+
+			if amp != self.last_amp {
+				C.blip_add_delta(self.blip, time, amp - self.last_amp)
+				self.last_amp = amp
+			}
+
+			if time >= end_time - 2 {
+				self.sample_recently_accessed = true
+			}
+			time += self.period
+			self.current_wave = (self.current_wave + 1) % 32
+		}
+
+		self.delay = time - end_time
+	}
+}
+
+fn (mut self WaveChannel) step_length() {
+	self.length.step()
+	self.active = self.active && self.length.is_active()
+}
+
+fn (mut self WaveChannel) dmg_maybe_corrupt_waveram() {
+	if !self.dmg_mode || !self.active || self.delay != 0 {
+		return
+	}
+
+	byteindex := usize((self.current_wave + 1) % 32) >> 1
+
+	if byteindex < 4 {
+		self.waveram[0] = self.waveram[byteindex]
+	}
+	else {
+		blockstart := byteindex & 0b1100
+		self.waveram[0] = self.waveram[blockstart]
+		self.waveram[1] = self.waveram[blockstart + 1]
+		self.waveram[2] = self.waveram[blockstart + 2]
+		self.waveram[3] = self.waveram[blockstart + 3]
+	}	
+}
+
+struct NoiseChannel {
+pub mut:
+    active bool
+    dac_enabled bool
+    reg_ff22 u8
+    length &LengthCounter
+    volume_envelope &VolumeEnvelope
+    period u32
+    shift_width u8
+    state u16
+    delay u32
+    last_amp i32
+    blip &C.blip_t
+}
+
+pub fn new_noise_channel(blip &C.blip_t) &NoiseChannel {
+	return &NoiseChannel {
+		active: false
+		dac_enabled: false
+		reg_ff22: 0
+		length: new_length_counter(64)
+		volume_envelope: new_volume_envelope()
+		period: 2048
+		shift_width: 14
+		state: 1
+		delay: 0
+		last_amp: 0
+		blip: blip
+	}
+}
+
+fn (self &NoiseChannel) get(a u16) u8 {
+	match a {
+		0xFF20 { return 0xFF }
+		0xFF21 { return self.volume_envelope.get(a) }
+		0xFF22 {
+			return self.reg_ff22
+		}
+		0xFF23 {
+			return u8(0x80 | if self.length.enabled { 0x40 } else { 0 } | 0x3F)
+		}
+		else { return 0 }
+	}
+}
+
+fn (mut self NoiseChannel) set(a u16, v u8, frame_step u8) {
+	match a {
+		0xFF20 { self.length.set(v & 0x3F) }
+		0xFF21 {
+			self.dac_enabled = v & 0xF8 != 0
+			self.active = self.active && self.dac_enabled
+		}
+		0xFF22 {
+			self.reg_ff22 = v
+			self.shift_width = u8(if v & 8 == 8 { 6 } else { 14 })
+			freq_div := match v & 7 {
+				0 { 8 }
+				else { (u32(v & 7) + 1) * 16 }
+			}
+			self.period = u32(freq_div) << (v >> 4)
+		}
+		0xFF23 {
+			self.length.enable(v & 0x40 == 0x40, frame_step)
+			self.active = self.length.is_active()
+
+			if v & 0x80 == 0x80 {
+				self.length.trigger(frame_step)
+
+				self.state = 0xFF
+				self.delay = 0
+
+				if self.dac_enabled {
+					self.active = true
+				}
+			}
+		}
 		else {}
 	}
+	self.volume_envelope.set(a, v)
 }
 
-// The linear feedback shift register (LFSR) generates a pseudo-random bit sequence. It has a 15-bit shift register
-// with feedback. When clocked by the frequency timer, the low two bits (0 and 1) are XORed, all bits are shifted right
-// by one, and the result of the XOR is put into the now-empty high bit. If width mode is 1 (NR43), the XOR result is
-// ALSO put into bit 6 AFTER the shift, resulting in a 7-bit LFSR. The waveform output is bit 0 of the LFSR, INVERTED.
-struct Lfsr {
-pub mut:
-    reg &Register
-    n u16
+fn (self &NoiseChannel) on() bool {
+    return self.active
 }
 
-fn new_lfsr(reg &Register) Lfsr {
-	return Lfsr { reg: reg, n: 0x0001 }
-}
-
-fn (mut self Lfsr) next() bool {
-	s := if self.reg.get_width_mode_of_lfsr() {
-		0x06
+fn (mut self NoiseChannel) run(start_time u32, end_time u32) {
+	if !self.active {
+		if self.last_amp != 0 {
+			C.blip_add_delta(self.blip, start_time, -self.last_amp)
+			self.last_amp = 0
+			self.delay = 0
+		}
 	} else {
-		0x0e
-	}
-	src := self.n
-	self.n <<= 1
-	bit := ((src >> s) ^ (self.n >> s)) & 0x0001
-	self.n |= bit
-	return (src >> s) & 0x0001 != 0x0000
-}
+		mut time := start_time + self.delay
+		for time < end_time {
+			oldstate := self.state
+			self.state <<= 1
+			bit := ((oldstate >> self.shift_width) ^ (self.state >> self.shift_width)) & 1
+			self.state |= bit
 
-fn (mut self Lfsr) reload() {
-	self.n = 0x0001
-}
-
-struct ChannelNoise {
-pub mut:
-    reg &Register
-    timer Clock
-    lc LengthCounter
-    ve VolumeEnvelope
-    lfsr Lfsr
-    blip Blip
-}
-
-fn new_channel_noise(blip &C.blip_t) &ChannelNoise {
-	reg := new_register(Channel.noise)
-	return &ChannelNoise {
-		reg: reg
-		timer: new_clock(4096)
-		lc: new_length_counter(reg)
-		ve: new_volume_envelope(reg)
-		lfsr: new_lfsr(reg)
-		blip: new_blip(blip)
-	}
-}
-
-fn (mut self ChannelNoise) next(cycles u32) {
-	for _ in 0..self.timer.next(cycles) {
-		ampl := if !self.reg.get_trigger() || self.ve.volume == 0 {
-			0x00
-		} else if self.lfsr.next() {
-			i32(self.ve.volume)
-		} else {
-			i32(self.ve.volume) * -1
-		}
-		self.blip.set(self.blip.from + self.timer.period, ampl)
-	}
-}
-
-fn (self &ChannelNoise) get(a u16) u8 {
-	return match a {
-		0xff1f { self.reg.nrx0 }
-		0xff20 { self.reg.nrx1 }
-		0xff21 { self.reg.nrx2 }
-		0xff22 { self.reg.nrx3 }
-		0xff23 { self.reg.nrx4 }
-		else { panic("BOI") }
-	}
-}
-
-fn (mut self ChannelNoise) set(a u16, v u8) {
-	match a {
-		0xff1f { self.reg.nrx0 = v }
-		0xff20 {
-			self.reg.nrx1 = v
-			self.lc.n = self.reg.get_length_load()
-		}
-		0xff21 { self.reg.nrx2 = v }
-		0xff22 {
-			self.reg.nrx3 = v
-			self.timer.period = period(self.reg)
-		}
-		0xff23 {
-			self.reg.nrx4 = v
-			if self.reg.get_trigger() {
-				self.lc.reload()
-				self.ve.reload()
-				self.lfsr.reload()
+			amp := match (oldstate >> self.shift_width) & 1 {
+				0 { -i32(self.volume_envelope.volume) }
+				else { i32(self.volume_envelope.volume) }
 			}
+
+			if self.last_amp != amp {
+				C.blip_add_delta(self.blip, time, amp - self.last_amp)
+				self.last_amp = amp
+			}
+
+			time += self.period
 		}
-		else { panic("BOI") }
+		self.delay = time - end_time
 	}
+}
+
+fn (mut self NoiseChannel) step_length() {
+	self.length.step()
+	self.active = self.active && self.length.is_active()
 }
 
 pub struct APU {
 pub mut:
-    reg &Register
-    timer Clock
-    fs FrameSequencer
-    channel1 &ChannelSquare
-    channel2 &ChannelSquare
-    channel3 &ChannelWave
-    channel4 &ChannelNoise
-    sample_rate u32
+	buffer []f32
+	buffer_lock sync.Mutex
+    on bool
+    time u32
+    prev_time u32
+    next_time u32
+    frame_step u8
+    output_period u32
+    channel1 &SquareChannel
+    channel2 &SquareChannel
+    channel3 &WaveChannel
+    channel4 &NoiseChannel
+    volume_left u8
+    volume_right u8
+    reg_vin_to_so u8
+    reg_ff25 u8
+    need_sync bool
+    dmg_mode bool
 }
 
-pub fn new_apu(sample_rate u32) &APU {
-	blipbuf1 := create_blipbuf(sample_rate)
-	blipbuf2 := create_blipbuf(sample_rate)
-	blipbuf3 := create_blipbuf(sample_rate)
-	blipbuf4 := create_blipbuf(sample_rate)
+pub fn new_apu(dmg_mode bool) &APU {
+	blipbuf1 := create_blipbuf(44100)
+	blipbuf2 := create_blipbuf(44100)
+	blipbuf3 := create_blipbuf(44100)
+	blipbuf4 := create_blipbuf(44100)
 
-	return &APU {
-		reg: new_register(Channel.mixer)
-		timer: new_clock(clock_frequency / 512)
-		fs: new_frame_sequencer()
-		channel1: new_channel_square(blipbuf1, Channel.square1)
-		channel2: new_channel_square(blipbuf2, Channel.square2)
-		channel3: new_channel_wave(blipbuf3)
-		channel4: new_channel_noise(blipbuf4)
-		sample_rate: sample_rate
+	output_period := (u64(1024) * u64(clock_frequency)) / u64(44100)
+
+	mut r := &APU {
+		buffer: []f32{cap: 44100}
+		buffer_lock: sync.Mutex {}
+		on: false
+		time: 0
+		prev_time: 0
+		next_time: clocks_per_frame
+		frame_step: 0
+		output_period: u32(output_period)
+		channel1: new_square_channel(blipbuf1, true)
+		channel2: new_square_channel(blipbuf2, false)
+		channel3: new_wave_channel(blipbuf3, dmg_mode)
+		channel4: new_noise_channel(blipbuf4)
+		volume_left: 7
+		volume_right: 7
+		reg_vin_to_so: 0x00
+		reg_ff25: 0x00
+		dmg_mode: dmg_mode
 	}
+	r.buffer_lock.init()
+	return r
 }
-
-fn (self &APU) play(l []f32, r []f32) {
-	if sdl.queue_audio(1,l.data,u32(l.len*l.element_size)) < 0 {
-		sdl.pause_audio(0)
-		sdl.pause_audio_device(1,0)
-	}
-}
-
-pub fn (mut self APU) next(cycles u32) {
-	if !self.reg.get_power() {
-		return
-	}
-
-	for _ in 0..self.timer.next(cycles) {
-		self.channel1.next(self.timer.period)
-		self.channel2.next(self.timer.period)
-		self.channel3.next(self.timer.period)
-		self.channel4.next(self.timer.period)
-
-		step := self.fs.next()
-		if step == 0 || step == 2 || step == 4 || step == 6 {
-			self.channel1.lc.next()
-			self.channel2.lc.next()
-			self.channel3.lc.next()
-			self.channel4.lc.next()
-		}
-		if step == 7 {
-			self.channel1.ve.next()
-			self.channel2.ve.next()
-			self.channel4.ve.next()
-		}
-		if step == 2 || step == 6 {
-			self.channel1.fs.next()
-			self.channel1.timer.period = period(self.channel1.reg)
-		}
-
-		C.blip_end_frame(self.channel1.blip.data,self.timer.period)
-		C.blip_end_frame(self.channel2.blip.data,self.timer.period)
-		C.blip_end_frame(self.channel3.blip.data,self.timer.period)
-		C.blip_end_frame(self.channel4.blip.data,self.timer.period)
-		self.channel1.blip.from -= self.timer.period
-		self.channel2.blip.from -= self.timer.period
-		self.channel3.blip.from -= self.timer.period
-		self.channel4.blip.from -= self.timer.period
-		self.mix()
-	}
-}
-
-fn (mut self APU) mix() {
-	sc1 := C.blip_samples_avail(self.channel1.blip.data)
-
-	sample_count := usize(sc1)
-	mut sum := 0
-
-	l_vol := (f32(self.reg.get_l_vol()) / 7.0) * (1.0 / 15.0) * 0.25
-	r_vol := (f32(self.reg.get_r_vol()) / 7.0) * (1.0 / 15.0) * 0.25
-
-	for sum < sample_count {
-		mut buf_l := [2048]f32{init: 0}
-		mut buf_r := [2048]f32{init: 0}
-		mut buf := [2048]i16{init: 0}
-
-		count1 := C.blip_read_samples(self.channel1.blip.data, unsafe {&i16(&buf)}, 2048, false)
-		for i, v in buf[..count1] {
-			if self.reg.nrx1 & 0x01 == 0x01 {
-				buf_l[i] += f32(v) * l_vol
-			}
-			if self.reg.nrx1 & 0x10 == 0x10 {
-				buf_r[i] += f32(v) * r_vol
-			}
-		}
-
-		count2 := C.blip_read_samples(self.channel2.blip.data, unsafe {&i16(&buf)}, 2048, false)
-		for i, v in buf[..count2] {
-			if self.reg.nrx1 & 0x02 == 0x02 {
-				buf_l[i] += f32(v) * l_vol
-			}
-			if self.reg.nrx1 & 0x20 == 0x20 {
-				buf_r[i] += f32(v) * r_vol
-			}
-		}
-
-		count3 := C.blip_read_samples(self.channel3.blip.data, unsafe {&i16(&buf)}, 2048, false)
-		for i, v in buf[..count3] {
-			if self.reg.nrx1 & 0x04 == 0x04 {
-				buf_l[i] += f32(v) * l_vol
-			}
-			if self.reg.nrx1 & 0x40 == 0x40 {
-				buf_r[i] += f32(v) * r_vol
-			}
-		}
-
-		count4 := C.blip_read_samples(self.channel4.blip.data, unsafe {&i16(&buf)}, 2048, false)
-		for i, v in buf[..count4] {
-			if self.reg.nrx1 & 0x08 == 0x08 {
-				buf_l[i] += f32(v) * l_vol
-			}
-			if self.reg.nrx1 & 0x80 == 0x80 {
-				buf_r[i] += f32(v) * r_vol
-			}
-		}
-
-		self.play(buf_l[..count1], buf_r[..count1])
-		sum += count1
-	}
-}
-
-const rd_mask = [
-    u8(0x80), 0x3f, 0x00, 0xff, 0xbf, 0xff, 0x3f, 0x00, 0xff, 0xbf, 0x7f, 0xff, 0x9f, 0xff, 0xbf, 0xff, 0xff, 0x00, 0x00,
-    0xbf, 0x00, 0x00, 0x70, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-]!
 
 pub fn (self &APU) get(a u16) u8 {
-	r := match a {
-		0xff10...0xff14 { self.channel1.get(a) }
-		0xff15...0xff19 { self.channel2.get(a) }
-		0xff1a...0xff1e { self.channel3.get(a) }
-		0xff1f...0xff23 { self.channel4.get(a) }
-		0xff24 { self.reg.nrx0 }
-		0xff25 { self.reg.nrx1 }
-		0xff26 {
-			a_ := self.reg.nrx2 & 0xf0
-			b := if self.channel1.reg.get_trigger() { 1 } else { 0 }
-			c := if self.channel2.reg.get_trigger() { 2 } else { 0 }
-			d := if self.channel3.reg.get_trigger() && self.channel3.reg.get_dac_power() {
-				4
-			} else {
-				0
-			}
-			e := if self.channel4.reg.get_trigger() { 8 } else { 0 }
-			a_ | b | c | d | e
+	v := match a {
+		0xFF10...0xFF14 { self.channel1.get(a) }
+		0xFF16...0xFF19 { self.channel2.get(a) }
+		0xFF1A...0xFF1E { self.channel3.get(a) }
+		0xFF20...0xFF23 { self.channel4.get(a) }
+		0xFF24 { ((self.volume_right & 7) << 4) | (self.volume_left & 7) | self.reg_vin_to_so }
+		0xFF25 { self.reg_ff25 }
+		0xFF26 {
+			is_on := if self.on { 0x80 } else { 0x00 }
+			(is_on | 0x70 | (if self.channel4.on() { 0x8 } else { 0x0 }) | (if self.channel3.on() { 0x4 } else { 0x0 }) | (if self.channel2.on() { 0x2 } else { 0x0 }) | (if self.channel1.on() { 0x1 } else { 0x0 }))
 		}
-		0xff27...0xff2f { 0x00 }
-		0xff30...0xff3f { self.channel3.get(a) }
-		else { 0x00 }
+		0xFF30...0xFF3F { self.channel3.get(a) }
+		else { 0xFF }
 	}
-	return r | rd_mask[a - 0xff10]
+	return v
 }
 
 pub fn (mut self APU) set(a u16, v u8) {
-	if a != 0xff26 && !self.reg.get_power() {
-		return
-	}
-	match a {
-		0xff10...0xff14 { self.channel1.set(a, v) }
-		0xff15...0xff19 { self.channel2.set(a, v) }
-		0xff1a...0xff1e { self.channel3.set(a, v) }
-		0xff1f...0xff23 { self.channel4.set(a, v) }
-		0xff24 { self.reg.nrx0 = v }
-		0xff25 { self.reg.nrx1 = v }
-		0xff26 {
-			self.reg.nrx2 = v
-			if !self.reg.get_power() {
-				self.channel1.reg.nrx0 = 0x00
-				self.channel1.reg.nrx1 = 0x00
-				self.channel1.reg.nrx2 = 0x00
-				self.channel1.reg.nrx3 = 0x00
-				self.channel1.reg.nrx4 = 0x00
-				self.channel2.reg.nrx0 = 0x00
-				self.channel2.reg.nrx1 = 0x00
-				self.channel2.reg.nrx2 = 0x00
-				self.channel2.reg.nrx3 = 0x00
-				self.channel2.reg.nrx4 = 0x00
-				self.channel3.reg.nrx0 = 0x00
-				self.channel3.reg.nrx1 = 0x00
-				self.channel3.reg.nrx2 = 0x00
-				self.channel3.reg.nrx3 = 0x00
-				self.channel3.reg.nrx4 = 0x00
-				self.channel4.reg.nrx0 = 0x00
-				self.channel4.reg.nrx1 = 0x00
-				self.channel4.reg.nrx2 = 0x00
-				self.channel4.reg.nrx3 = 0x00
-				self.channel4.reg.nrx4 = 0x00
-				self.reg.nrx0 = 0x00
-				self.reg.nrx1 = 0x00
-				self.reg.nrx2 = 0x00
-				self.reg.nrx3 = 0x00
-				self.reg.nrx4 = 0x00
+	if !self.on {
+		if self.dmg_mode {
+			match a {
+				0xFF11 { self.channel1.set(a, v & 0x3F, self.frame_step) }
+				0xFF16 { self.channel2.set(a, v & 0x3F, self.frame_step) }
+				0xFF1B { self.channel3.set(a, v, self.frame_step) }
+				0xFF20 { self.channel4.set(a, v & 0x3F, self.frame_step) }
+				else {}
 			}
 		}
-		0xff27...0xff2f {}
-		0xff30...0xff3f { self.channel3.set(a, v) }
+		if a != 0xFF26 {
+			return
+		}
+	}
+	self.run()
+	match a {
+		0xFF10 ... 0xFF14 { self.channel1.set(a, v, self.frame_step) }
+		0xFF16 ... 0xFF19 { self.channel2.set(a, v, self.frame_step) }
+		0xFF1A ... 0xFF1E { self.channel3.set(a, v, self.frame_step) }
+		0xFF20 ... 0xFF23 { self.channel4.set(a, v, self.frame_step) }
+		0xFF24 {
+			self.volume_left = v & 0x7
+			self.volume_right = (v >> 4) & 0x7
+			self.reg_vin_to_so = v & 0x88
+		}
+		0xFF25 { self.reg_ff25 = v }
+		0xFF26 {
+			turn_on := v & 0x80 == 0x80
+			if self.on && turn_on == false {
+				for i in 0xFF10..0xFF26 {
+					self.set(i, 0)
+				}
+			}
+			if !self.on && turn_on {
+				self.frame_step = 0
+			}
+			self.on = turn_on
+		}
+		0xFF30 ... 0xFF3F { self.channel3.set(a, v, self.frame_step) }
 		else {}
 	}
 }
 
-fn create_blipbuf(sample_rate u32) &C.blip_t {
-    mut blipbuf := C.blip_new(sample_rate)
-    C.blip_set_rates(blipbuf, f64(clock_frequency), f64(sample_rate))
-    return blipbuf
+pub fn (mut self APU) next(cycles u32) {
+	if !self.on { return }
+
+	self.time += cycles
+
+	if self.time >= self.output_period {
+		self.do_output()
+	}
 }
 
-fn period(reg &Register) u32 {
-	return match true {
-        reg.channel == Channel.square1 || reg.channel == Channel.square2 { 4 * (2048 - u32(reg.get_frequency())) }
-        reg.channel == Channel.wave { 2 * (2048 - u32(reg.get_frequency())) }
-        reg.channel == Channel.noise {
-            d := match reg.get_dividor_code() {
-                0 { 8 }
-                else { (u32(reg.get_dividor_code()) + 1) * 16 }
-            }
-            u32(d) << reg.get_clock_shift()
-        }
-        reg.channel == Channel.mixer { clock_frequency / 512 }
-		else { panic("") }
-    }
+pub fn (mut self APU) sync() {
+	self.need_sync = true
+}
+
+fn (mut self APU) do_output() {
+	self.run()
+	C.blip_end_frame(self.channel1.blip,self.time)
+	C.blip_end_frame(self.channel2.blip,self.time)
+	C.blip_end_frame(self.channel3.blip,self.time)
+	C.blip_end_frame(self.channel4.blip,self.time)
+	self.next_time -= self.time
+	self.time = 0
+	self.prev_time = 0
+
+	if !self.need_sync {
+		self.need_sync = false
+		self.mix_buffers()
+	} else {
+		self.clear_buffers()
+	}
+}
+
+fn (mut self APU) run() {
+	for self.next_time <= self.time {
+		self.channel1.run(self.prev_time, self.next_time)
+		self.channel2.run(self.prev_time, self.next_time)
+		self.channel3.run(self.prev_time, self.next_time)
+		self.channel4.run(self.prev_time, self.next_time)
+
+		if self.frame_step % 2 == 0 {
+			self.channel1.step_length()
+			self.channel2.step_length()
+			self.channel3.step_length()
+			self.channel4.step_length()
+		}
+		if self.frame_step % 4 == 2 {
+			self.channel1.step_sweep()
+		}
+		if self.frame_step == 7 {
+			self.channel1.volume_envelope.tick()
+			self.channel2.volume_envelope.tick()
+			self.channel4.volume_envelope.tick()
+		}
+
+		self.frame_step = (self.frame_step + 1) % 8
+
+		self.prev_time = self.next_time
+		self.next_time += clocks_per_frame
+	}
+
+	if self.prev_time != self.time {
+		self.channel1.run(self.prev_time, self.time)
+		self.channel2.run(self.prev_time, self.time)
+		self.channel3.run(self.prev_time, self.time)
+		self.channel4.run(self.prev_time, self.time)
+
+		self.prev_time = self.time
+	}
+}
+
+fn (mut self APU) mix_buffers() {
+	sample_count := C.blip_samples_avail(self.channel1.blip)
+
+	mut outputted := 0
+
+	left_vol := (f32(self.volume_left) / 7.0) * (1.0 / 15.0) * 0.25
+	right_vol := (f32(self.volume_right) / 7.0) * (1.0 / 15.0) * 0.25
+
+	for outputted < sample_count {
+		mut buf_out := []f32{len: 1024, init: 0}
+		mut buf := []i16{len: 1024, init: 0}
+
+		count1 := C.blip_read_samples(self.channel1.blip, buf.data, buf.len, false)
+		for i, v in buf[..count1] {
+			if self.reg_ff25 & 0x01 == 0x01 {
+				buf_out[i] += f32(v) * left_vol
+			} else if self.reg_ff25 & 0x10 == 0x10 {
+				buf_out[i] += f32(v) * right_vol
+			}
+		}
+
+		count2 := C.blip_read_samples(self.channel2.blip, buf.data, buf.len, false)
+		for i, v in buf[..count2] {
+			if self.reg_ff25 & 0x02 == 0x02 {
+				buf_out[i] += f32(v) * left_vol
+			} else if self.reg_ff25 & 0x20 == 0x20 {
+				buf_out[i] += f32(v) * right_vol
+			}
+		}
+
+		count3 := C.blip_read_samples(self.channel3.blip, buf.data, buf.len, false)
+		for i, v in buf[..count3] {
+			if self.reg_ff25 & 0x04 == 0x04 {
+				buf_out[i] += f32(v) * left_vol
+			} else if self.reg_ff25 & 0x40 == 0x40 {
+				buf_out[i] += f32(v) * right_vol
+			}
+		}
+
+		count4 := C.blip_read_samples(self.channel4.blip, buf.data, buf.len, false)
+		for i, v in buf[..count4] {
+			if self.reg_ff25 & 0x08 == 0x08 {
+				buf_out[i] += f32(v) * left_vol
+			} else if self.reg_ff25 & 0x80 == 0x80 {
+				buf_out[i] += f32(v) * right_vol
+			}
+		}
+
+		self.buffer_lock.@lock()
+		if (self.buffer.len + count1) > 44100 && self.buffer.len != 44100 {
+			self.buffer << buf_out[..(44100-self.buffer.len)]
+		} else if self.buffer.len != 44100 {
+			self.buffer << buf_out[..count1]
+		}
+		self.buffer_lock.unlock()
+
+		outputted += count1
+	}
+}
+
+fn (mut self APU) clear_buffers() {
+	C.blip_clear(self.channel1.blip)
+	C.blip_clear(self.channel2.blip)
+	C.blip_clear(self.channel3.blip)
+	C.blip_clear(self.channel4.blip)
+}
+
+fn create_blipbuf(samples_rate u32) &C.blip_t {
+    mut blipbuf := C.blip_new(samples_rate)
+    C.blip_set_rates(blipbuf, f64(clocks_per_second), f64(samples_rate))
+    return blipbuf
 }

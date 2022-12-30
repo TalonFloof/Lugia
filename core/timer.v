@@ -12,8 +12,8 @@ pub fn new_clock(period u32) Clock {
 
 pub fn (mut clock Clock) next(cycles u32) u32 {
 	clock.n += cycles
-    rs := clock.n / clock.period
-    clock.n = clock.n % clock.period
+    rs := u32(clock.n / clock.period)
+    clock.n = u32(clock.n % clock.period)
     return rs
 }
 
