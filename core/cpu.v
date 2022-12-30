@@ -1401,6 +1401,9 @@ mut:
 }
 
 pub fn new_rtpcpu(path string) &RealTimePerfCPU {
+	if path.len == 0 {
+		exit(0)
+	}
     return &RealTimePerfCPU {
         cpu: new_cpu(path)
         step_cycles: 0

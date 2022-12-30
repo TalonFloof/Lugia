@@ -25,13 +25,7 @@ string internal_open_file() {
             NSString* path = [[selection path] stringByResolvingSymlinksInPath];
             return tos_clone(path.UTF8String);
         } else {
-            NSBeep();
-            NSAlert* alert = [[NSAlert alloc] init];
-            [alert setAlertStyle:NSWarningAlertStyle];
-            [alert setMessageText:@"Please select a ROM in order to use Lugia"];
-            [alert setInformativeText:@""];
-            [alert addButtonWithTitle:@"Ok"];
-            [alert runModal];
+            return tos_clone(@"".UTF8String);
         }
     }
 }

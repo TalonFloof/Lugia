@@ -51,7 +51,7 @@ fn lugia_frame(mut lugia Lugia) {
   } else {
     lugia.gg.begin()
     lugia.gg.update_pixel_data(lugia.fb,lugia.fb_dat.data)
-    lugia.gg.draw_image(0,0,160*3,144*3,lugia.gg.get_cached_image_by_idx(lugia.fb))
+    lugia.gg.draw_image(0,0,160*4,144*4,lugia.gg.get_cached_image_by_idx(lugia.fb))
     lugia.gg.end()
   }
 }
@@ -145,14 +145,14 @@ fn cpu_loop(mut lugia &Lugia) {
 
 fn stream_audio(mut buffer &f32, num_frames int, num_channels int, mut lugia Lugia) {
   if lugia.cpu != unsafe { nil } {
-    lugia.cpu.cpu.mem.apu.buffer_lock.@lock()
     unsafe { vmemset(buffer, 0, u32(num_frames)*sizeof(f32)) }
-    if lugia.cpu.cpu.mem.apu.buffer.len > 0 {
-      len := math.min(num_frames,lugia.cpu.cpu.mem.apu.buffer.len)
-      unsafe { vmemcpy(buffer, lugia.cpu.cpu.mem.apu.buffer.data, u32(len)*sizeof(f32)) }
-      lugia.cpu.cpu.mem.apu.buffer.delete_many(0,len)
-    }
-    lugia.cpu.cpu.mem.apu.buffer_lock.unlock()
+    for i in 0..num_frames {
+	  if lugia.cpu.cpu.mem.apu.buffer.tail == lugia.cpu.cpu.mem.apu.buffer.head {
+    	break
+  	  }
+	  buffer[i] = lugia.cpu.cpu.mem.apu.buffer.data[lugia.cpu.cpu.mem.apu.buffer.tail]
+	  lugia.cpu.cpu.mem.apu.buffer.tail = (lugia.cpu.cpu.mem.apu.buffer.tail + 1) % 44100
+	}
   }
 }
 
@@ -166,8 +166,8 @@ fn main() {
   }
   lugia.gg = gg.new_context(
     bg_color: gx.rgb(0,0,0)
-    width: 160*3
-    height: 144*3
+    width: 160*4
+    height: 144*4
     user_data: lugia
     frame_fn: lugia_frame
     keydown_fn: lugia_keydown

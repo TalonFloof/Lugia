@@ -644,10 +644,16 @@ fn (mut self NoiseChannel) step_length() {
 	self.active = self.active && self.length.is_active()
 }
 
+pub struct FIFOQueue {
+pub mut:
+	head int
+	tail int
+	data [44100]f32
+}
+
 pub struct APU {
 pub mut:
-	buffer []f32
-	buffer_lock sync.Mutex
+	buffer FIFOQueue
     on bool
     time u32
     prev_time u32
@@ -674,9 +680,12 @@ pub fn new_apu(dmg_mode bool) &APU {
 
 	output_period := (u64(1024) * u64(clock_frequency)) / u64(44100)
 
-	mut r := &APU {
-		buffer: []f32{cap: 44100}
-		buffer_lock: sync.Mutex {}
+	return &APU {
+		buffer: FIFOQueue {
+			head: 0
+			tail: 0
+			data: [44100]f32{init: 0}
+		}
 		on: false
 		time: 0
 		prev_time: 0
@@ -693,8 +702,6 @@ pub fn new_apu(dmg_mode bool) &APU {
 		reg_ff25: 0x00
 		dmg_mode: dmg_mode
 	}
-	r.buffer_lock.init()
-	return r
 }
 
 pub fn (self &APU) get(a u16) u8 {
@@ -877,13 +884,14 @@ fn (mut self APU) mix_buffers() {
 			}
 		}
 
-		self.buffer_lock.@lock()
-		if (self.buffer.len + count1) > 44100 && self.buffer.len != 44100 {
-			self.buffer << buf_out[..(44100-self.buffer.len)]
-		} else if self.buffer.len != 44100 {
-			self.buffer << buf_out[..count1]
+		for i, v in buf_out[..count1] {
+			if ((self.buffer.head + 1) % 44100) != self.buffer.tail {
+				self.buffer.data[self.buffer.head] = v
+				self.buffer.head = (self.buffer.head + 1) % 44100
+			} else {
+				break
+			}
 		}
-		self.buffer_lock.unlock()
 
 		outputted += count1
 	}
