@@ -82,9 +82,6 @@ fn lugia_keydown(c gg.KeyCode, m gg.Modifier, mut lugia Lugia) {
     .right_shift {
       lugia.cpu.cpu.mem.joypad.keydown(.select_)
     }
-  .escape {
-    lugia.cpu.cpu.mem.cart.save()
-  }
     else {}
   }
 }
@@ -159,6 +156,10 @@ fn stream_audio(mut buffer &f32, num_frames int, num_channels int, mut lugia Lug
   }
 }
 
+fn lugia_exit(mut lugia Lugia) {
+  lugia.cpu.cpu.mem.cart.save()
+}
+
 fn main() {
   mut lugia := &Lugia {
     fb_dat: []u8{len: 160*144*4, init: 0xff}
@@ -171,11 +172,11 @@ fn main() {
     frame_fn: lugia_frame
     keydown_fn: lugia_keydown
     keyup_fn: lugia_keyup
+    cleanup_fn: lugia_exit
     window_title: "Lugia"
     create_window: true
   )
 
   lugia.run()
-  lugia.cpu.cpu.mem.cart.save()
 }
 
