@@ -272,15 +272,17 @@ mut:
     ram_enabled bool
     rom_bank usize
     ram_bank usize
+	save_path string
 }
 
-pub fn new_mbc5rom(rom []u8, ram []u8) &MBC5ROM {
+pub fn new_mbc5rom(rom []u8, ram []u8, sav string) &MBC5ROM {
     return &MBC5ROM {
         rom: rom
         ram: ram
         rom_bank: 0x01
         ram_bank: 0x00
         ram_enabled: false
+		save_path: sav
     }
 }
 
@@ -316,7 +318,15 @@ pub fn (mut x MBC5ROM) set(a u16, v u8) {
     }
 }
 
-pub fn (mut x MBC5ROM) save() {}
+pub fn (mut x MBC5ROM) save() {
+	if x.save_path.len == 0 {
+        return
+    }
+    eprintln("Saving!")
+    mut f := os.create(x.save_path) or { C.show_alert("Failed to write save data: ${err}") panic("") }
+    f.write(x.ram) or { C.show_alert("Failed to write save data: ${err}") panic("") }
+    f.close()
+}
 
 fn cart_size(num u8) u32 {
     bank := u32(16384)
@@ -371,8 +381,11 @@ pub fn new_cart(path string) &GameBoyROM {
         0x03 { &GameBoyROM(new_mbc1rom(data,read_ram(save_path_base + ".sav",int(ram_size(data[0x149]))),save_path_base + ".sav")) } // SAVEDATA!
         0x0f { &GameBoyROM(new_mbc3rom(data,[]u8{len: 0, init: 0},"",save_path_base + ".rtc")) } // TIMER!
         0x10 { &GameBoyROM(new_mbc3rom(data,read_ram(save_path_base + ".sav",int(ram_size(data[0x149]))),save_path_base + ".sav",save_path_base + ".rtc")) } // TIMER & SAVEDATA!
-        0x13 { &GameBoyROM(new_mbc3rom(data,read_ram(save_path_base + ".sav",int(ram_size(data[0x149]))),save_path_base + ".sav","")) } // SAVEDATA!
-        0x19 { &GameBoyROM(new_mbc5rom(data,[]u8{len: 0, init: 0})) }
+        0x12 { &GameBoyROM(new_mbc3rom(data,[]u8{len: int(ram_size(data[0x149])), init: 0},"","")) }
+		0x13 { &GameBoyROM(new_mbc3rom(data,read_ram(save_path_base + ".sav",int(ram_size(data[0x149]))),save_path_base + ".sav","")) } // SAVEDATA!
+        0x19 { &GameBoyROM(new_mbc5rom(data,[]u8{len: 0, init: 0},"")) }
+		0x1a { &GameBoyROM(new_mbc5rom(data,[]u8{len: int(ram_size(data[0x149])), init: 0},"")) }
+		0x1b { &GameBoyROM(new_mbc5rom(data,read_ram(save_path_base + ".sav",int(ram_size(data[0x149]))),save_path_base + ".sav")) }
         else { C.show_alert("ROM Type 0x${data[0x147]:02x} is not supported by Lugia") panic("") }
     }
 }
