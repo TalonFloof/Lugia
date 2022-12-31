@@ -5,7 +5,6 @@ import core
 import gg
 import gx
 import os
-import math
 import sokol.audio
 
 [heap]

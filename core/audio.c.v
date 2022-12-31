@@ -1,7 +1,7 @@
 module core
 
-import sync
-import sokol.audio
+// This is basicaly copy and hack source code from rboy (Cuz I'm too lazy to make the APU code myself) (https://github.com/mvdnes/rboy)
+// Licensed under the MIT License (C) 2014 Mathijs van de Nes, 2022-2023 TalonFox
 
 #include "@VROOT/core/blip_buf.c"
 
@@ -875,10 +875,10 @@ fn (mut self APU) mix_buffers() {
 		count3 := C.blip_read_samples(self.channel3.blip, buf.data, buf.len, false)
 		for i, v in buf[..count3] {
 			if self.reg_ff25 & 0x04 == 0x04 {
-				buf_l[i] += f32(v / 4) * left_vol
+				buf_l[i] += f32(v) * left_vol
 			}
 			if self.reg_ff25 & 0x40 == 0x40 {
-				buf_r[i] += f32(v / 4) * right_vol
+				buf_r[i] += f32(v) * right_vol
 			}
 		}
 
