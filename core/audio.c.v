@@ -1,6 +1,7 @@
 module core
 
 import sync
+import sokol.audio
 
 #include "@VROOT/core/blip_buf.c"
 
@@ -648,7 +649,8 @@ pub struct FIFOQueue {
 pub mut:
 	head int
 	tail int
-	data [44100]f32
+	data_l [44100]f32
+	data_r [44100]f32
 }
 
 pub struct APU {
@@ -684,7 +686,8 @@ pub fn new_apu(dmg_mode bool) &APU {
 		buffer: FIFOQueue {
 			head: 0
 			tail: 0
-			data: [44100]f32{init: 0}
+			data_l: [44100]f32{init: 0}
+			data_r: [44100]f32{init: 0}
 		}
 		on: false
 		time: 0
@@ -845,48 +848,54 @@ fn (mut self APU) mix_buffers() {
 	right_vol := (f32(self.volume_right) / 7.0) * (1.0 / 15.0) * 0.25
 
 	for outputted < sample_count {
-		mut buf_out := []f32{len: 1024, init: 0}
+		mut buf_l := []f32{len: 1024, init: 0}
+		mut buf_r := []f32{len: 1024, init: 0}
 		mut buf := []i16{len: 1024, init: 0}
 
 		count1 := C.blip_read_samples(self.channel1.blip, buf.data, buf.len, false)
 		for i, v in buf[..count1] {
 			if self.reg_ff25 & 0x01 == 0x01 {
-				buf_out[i] += f32(v) * left_vol
-			} else if self.reg_ff25 & 0x10 == 0x10 {
-				buf_out[i] += f32(v) * right_vol
+				buf_l[i] += f32(v) * left_vol
+			}
+			if self.reg_ff25 & 0x10 == 0x10 {
+				buf_r[i] += f32(v) * right_vol
 			}
 		}
 
 		count2 := C.blip_read_samples(self.channel2.blip, buf.data, buf.len, false)
 		for i, v in buf[..count2] {
 			if self.reg_ff25 & 0x02 == 0x02 {
-				buf_out[i] += f32(v) * left_vol
-			} else if self.reg_ff25 & 0x20 == 0x20 {
-				buf_out[i] += f32(v) * right_vol
+				buf_l[i] += f32(v) * left_vol
+			}
+			if self.reg_ff25 & 0x20 == 0x20 {
+				buf_r[i] += f32(v) * right_vol
 			}
 		}
 
 		count3 := C.blip_read_samples(self.channel3.blip, buf.data, buf.len, false)
 		for i, v in buf[..count3] {
 			if self.reg_ff25 & 0x04 == 0x04 {
-				buf_out[i] += f32(v) * left_vol
-			} else if self.reg_ff25 & 0x40 == 0x40 {
-				buf_out[i] += f32(v) * right_vol
+				buf_l[i] += f32(v) * left_vol
+			}
+			if self.reg_ff25 & 0x40 == 0x40 {
+				buf_r[i] += f32(v) * right_vol
 			}
 		}
 
 		count4 := C.blip_read_samples(self.channel4.blip, buf.data, buf.len, false)
 		for i, v in buf[..count4] {
 			if self.reg_ff25 & 0x08 == 0x08 {
-				buf_out[i] += f32(v) * left_vol
-			} else if self.reg_ff25 & 0x80 == 0x80 {
-				buf_out[i] += f32(v) * right_vol
+				buf_l[i] += f32(v) * left_vol
+			}
+			if self.reg_ff25 & 0x80 == 0x80 {
+				buf_r[i] += f32(v) * right_vol
 			}
 		}
 
-		for i, v in buf_out[..count1] {
+		for i in 0..count1 {
 			if ((self.buffer.head + 1) % 44100) != self.buffer.tail {
-				self.buffer.data[self.buffer.head] = v
+				self.buffer.data_l[self.buffer.head] = buf_l[i]
+				self.buffer.data_r[self.buffer.head] = buf_r[i]
 				self.buffer.head = (self.buffer.head + 1) % 44100
 			} else {
 				break

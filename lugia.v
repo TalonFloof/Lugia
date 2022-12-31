@@ -39,11 +39,14 @@ fn lugia_frame(mut lugia Lugia) {
     }
     audio.setup(&C.saudio_desc {
       sample_rate: 44100
-      num_channels: 1
+      num_channels: 2
       buffer_frames: 2048
       stream_userdata_cb: stream_audio
       user_data: lugia
-   })
+    })
+    if audio.channels() == 1 {
+      show_alert("Sokol doesn't allow for stereo audio!")
+    }
     lugia.fb = lugia.gg.new_streaming_image(160,144,4,gg.StreamingImageConfig { min_filter: .nearest, mag_filter: .nearest })
     spawn cpu_loop(mut lugia)
 
@@ -149,14 +152,15 @@ fn cpu_loop(mut lugia &Lugia) {
 
 fn stream_audio(mut buffer &f32, num_frames int, num_channels int, mut lugia Lugia) {
   if lugia.cpu != unsafe { nil } {
-    unsafe { vmemset(buffer, 0, u32(num_frames)*sizeof(f32)) }
-    for i in 0..num_frames {
-	  if lugia.cpu.cpu.mem.apu.buffer.tail == lugia.cpu.cpu.mem.apu.buffer.head {
-    	break
+    unsafe { vmemset(buffer, 0, u32(num_frames*num_channels)*sizeof(f32)) }
+    for i := 0; i < num_frames*num_channels; i += 2 {
+	    if lugia.cpu.cpu.mem.apu.buffer.tail == lugia.cpu.cpu.mem.apu.buffer.head {
+    	  break
   	  }
-	  buffer[i] = lugia.cpu.cpu.mem.apu.buffer.data[lugia.cpu.cpu.mem.apu.buffer.tail]
-	  lugia.cpu.cpu.mem.apu.buffer.tail = (lugia.cpu.cpu.mem.apu.buffer.tail + 1) % 44100
-	}
+	    buffer[i] = lugia.cpu.cpu.mem.apu.buffer.data_l[lugia.cpu.cpu.mem.apu.buffer.tail]
+      buffer[i+1] = lugia.cpu.cpu.mem.apu.buffer.data_r[lugia.cpu.cpu.mem.apu.buffer.tail]
+	    lugia.cpu.cpu.mem.apu.buffer.tail = (lugia.cpu.cpu.mem.apu.buffer.tail + 1) % 44100
+	  }
   }
 }
 
