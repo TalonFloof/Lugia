@@ -1394,6 +1394,7 @@ pub fn (mut cpu CPU) next() u32 {
 pub struct RealTimePerfCPU {
 pub mut:
     cpu CPU
+    turbo bool
 mut:
     step_cycles u32
     stopwatch time.StopWatch
@@ -1417,7 +1418,9 @@ pub fn (mut self RealTimePerfCPU) next() u32 {
         self.step_flip = true
         self.step_cycles -= step_cycle_total
         now := self.stopwatch.elapsed()
-        time.sleep(time.Duration(math.max(i64(0),(step_time*1000000) - i64(now))))
+        if !self.turbo {
+            time.sleep(time.Duration(math.max(i64(0),(step_time*1000000) - i64(now))))
+        }
         self.stopwatch.restart()
     }
     cycles := self.cpu.next()

@@ -82,6 +82,10 @@ fn lugia_keydown(c gg.KeyCode, m gg.Modifier, mut lugia Lugia) {
     .right_shift {
       lugia.cpu.cpu.mem.joypad.keydown(.select_)
     }
+    .left_shift {
+      lugia.cpu.turbo = !lugia.cpu.turbo
+      lugia.cpu.cpu.mem.apu.buffer.tail = lugia.cpu.cpu.mem.apu.buffer.head
+    }
     else {}
   }
 }
