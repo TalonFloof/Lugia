@@ -885,10 +885,10 @@ fn (mut self APU) mix_buffers() {
 		count4 := C.blip_read_samples(self.channel4.blip, buf.data, buf.len, false)
 		for i, v in buf[..count4] {
 			if self.reg_ff25 & 0x08 == 0x08 {
-				buf_l[i] += f32(v) * left_vol
+				buf_l[i] += f32(v / 4) * left_vol
 			}
 			if self.reg_ff25 & 0x80 == 0x80 {
-				buf_r[i] += f32(v) * right_vol
+				buf_r[i] += f32(v / 4) * right_vol
 			}
 		}
 
